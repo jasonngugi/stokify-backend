@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ message: 'Inventory app backend is running!' });
+  res.json({ message: 'Inventory app backend is running! v2' });
 });
 
 app.post('/products', async (req, res) => {
