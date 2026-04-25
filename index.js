@@ -127,14 +127,14 @@ app.post('/suppliers', async (req, res) => {
   res.status(201).json({ supplier: data[0] });
 });
 
-app.get('/suppliers/:store_id', async (req, res) => {
+app.get('/products/:store_id', async (req, res) => {
   const { store_id } = req.params;
   const { data, error } = await supabase
-    .from('suppliers')
-    .select('*')
+    .from('products')
+    .select('*, suppliers(name)')
     .eq('store_id', store_id);
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ suppliers: data });
+  res.json({ products: data });
 });
 
 app.delete('/suppliers/:id', async (req, res) => {
