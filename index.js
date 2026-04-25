@@ -117,6 +117,37 @@ app.get('/sales/:store_id', async (req, res) => {
   res.json({ sales: data });
 });
 
+app.post('/suppliers', async (req, res) => {
+  const { store_id, name, contact_email, phone } = req.body;
+  const { data, error } = await supabase
+    .from('suppliers')
+    .insert([{ store_id, name, contact_email, phone }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ supplier: data[0] });
+});
+
+app.get('/suppliers/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('suppliers')
+    .select('*')
+    .eq('store_id', store_id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ suppliers: data });
+});
+
+app.delete('/suppliers/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase
+    .from('suppliers')
+    .delete()
+    .eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Supplier deleted successfully' });
+});
+
+
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
