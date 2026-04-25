@@ -134,6 +134,36 @@ app.delete('/suppliers/:id', async (req, res) => {
   res.json({ message: 'Supplier deleted successfully' });
 });
 
+
+app.post('/stores', async (req, res) => {
+  const { name, user_id } = req.body;
+  const { data, error } = await supabase
+    .from('stores')
+    .insert([{ name }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  
+  const store = data[0];
+  
+  const { error: userError } = await supabase
+    .from('users')
+    .insert([{ store_id: store.id, name: name, email: '', role: 'owner', id: user_id }]);
+  
+  res.status(201).json({ store });
+});
+
+app.get('/stores/user/:user_id', async (req, res) => {
+  const { user_id } = req.params;
+  const { data, error } = await supabase
+    .from('users')
+    .select('store_id, stores(*)')
+    .eq('id', user_id)
+    .single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ store: data.stores, store_id: data.store_id });
+});
+
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
