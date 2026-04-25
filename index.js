@@ -93,6 +93,31 @@ app.get('/products/lowstock/:store_id', async (req, res) => {
   res.json({ low_stock_products: data });
 });
 
+
+app.get('/sales/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('sales')
+    .select(`
+      id,
+      total_amount,
+      sold_at,
+      sale_items (
+        quantity,
+        unit_price,
+        products (
+          name
+        )
+      )
+    `)
+    .eq('store_id', store_id)
+    .order('sold_at', { ascending: false });
+
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ sales: data });
+});
+
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
