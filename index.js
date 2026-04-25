@@ -14,10 +14,10 @@ app.get('/', (req, res) => {
 });
 
 app.post('/products', async (req, res) => {
-  const { store_id, name, sku, quantity, low_stock_threshold, price } = req.body;
+  const { store_id, name, sku, quantity, low_stock_threshold, price, supplier_id } = req.body;
   const { data, error } = await supabase
     .from('products')
-    .insert([{ store_id, name, sku, quantity, low_stock_threshold, price }])
+    .insert([{ store_id, name, sku, quantity, low_stock_threshold, price, supplier_id }])
     .select();
   if (error) return res.status(400).json({ error: error.message });
   res.status(201).json({ product: data[0] });
@@ -27,7 +27,7 @@ app.get('/products/:store_id', async (req, res) => {
   const { store_id } = req.params;
   const { data, error } = await supabase
     .from('products')
-    .select('*')
+    .select('*, suppliers(name)')
     .eq('store_id', store_id);
   if (error) return res.status(400).json({ error: error.message });
   res.json({ products: data });
@@ -82,18 +82,6 @@ app.post('/sales', async (req, res) => {
   res.status(201).json({ sale: sale[0], total_amount });
 });
 
-app.get('/products/lowstock/:store_id', async (req, res) => {
-  const { store_id } = req.params;
-  const { data, error } = await supabase
-    .from('products')
-    .select('*')
-    .eq('store_id', store_id)
-    .filter('quantity', 'lte', supabase.raw('low_stock_threshold'));
-  if (error) return res.status(400).json({ error: error.message });
-  res.json({ low_stock_products: data });
-});
-
-
 app.get('/sales/:store_id', async (req, res) => {
   const { store_id } = req.params;
   const { data, error } = await supabase
@@ -112,7 +100,6 @@ app.get('/sales/:store_id', async (req, res) => {
     `)
     .eq('store_id', store_id)
     .order('sold_at', { ascending: false });
-
   if (error) return res.status(400).json({ error: error.message });
   res.json({ sales: data });
 });
@@ -127,14 +114,14 @@ app.post('/suppliers', async (req, res) => {
   res.status(201).json({ supplier: data[0] });
 });
 
-app.get('/products/:store_id', async (req, res) => {
+app.get('/suppliers/:store_id', async (req, res) => {
   const { store_id } = req.params;
   const { data, error } = await supabase
-    .from('products')
-    .select('*, suppliers(name)')
+    .from('suppliers')
+    .select('*')
     .eq('store_id', store_id);
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ products: data });
+  res.json({ suppliers: data });
 });
 
 app.delete('/suppliers/:id', async (req, res) => {
@@ -146,8 +133,6 @@ app.delete('/suppliers/:id', async (req, res) => {
   if (error) return res.status(400).json({ error: error.message });
   res.json({ message: 'Supplier deleted successfully' });
 });
-
-
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
