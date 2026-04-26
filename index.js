@@ -27,7 +27,7 @@ app.get('/products/:store_id', async (req, res) => {
   const { store_id } = req.params;
   const { data, error } = await supabase
     .from('products')
-    .select('*, suppliers(name)')
+    .select('*, suppliers(name), categories(name)')
     .eq('store_id', store_id);
   if (error) return res.status(400).json({ error: error.message });
   res.json({ products: data });
