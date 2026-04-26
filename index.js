@@ -267,6 +267,32 @@ app.get('/reorder/:store_id', async (req, res) => {
 });
 
 
+app.get('/expiry/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  
+  const today = new Date();
+  const thirtyDaysFromNow = new Date();
+  thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+
+  const { data, error } = await supabase
+    .from('products')
+    .select('*, categories(name)')
+    .eq('store_id', store_id)
+    .not('expiry_date', 'is', null)
+    .lte('expiry_date', thirtyDaysFromNow.toISOString().split('T')[0])
+    .order('expiry_date', { ascending: true });
+
+  if (error) return res.status(400).json({ error: error.message });
+
+  const products = data.map(p => {
+    const expiry = new Date(p.expiry_date);
+    const daysUntilExpiry = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
+    return { ...p, days_until_expiry: daysUntilExpiry };
+  });
+
+  res.json({ expiring_products: products });
+});
+
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
