@@ -216,6 +216,55 @@ app.delete('/categories/:id', async (req, res) => {
 });
 
 
+app.get('/reorder/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  // Get all products with low stock
+  const { data: products, error: productsError } = await supabase
+    .from('products')
+    .select('*, suppliers(name, phone, contact_email), categories(name)')
+    .eq('store_id', store_id)
+    .filter('quantity', 'lte', supabase.raw('low_stock_threshold'));
+
+  if (productsError) return res.status(400).json({ error: productsError.message });
+
+  // Get sales from last 30 days
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const { data: salesData, error: salesError } = await supabase
+    .from('sale_items')
+    .select('product_id, quantity, sales(sold_at)')
+    .gte('sales.sold_at', thirtyDaysAgo.toISOString());
+
+  if (salesError) return res.status(400).json({ error: salesError.message });
+
+  // Calculate reorder suggestions
+  const reorderSuggestions = products.map(product => {
+    const productSales = salesData.filter(s => s.product_id === product.id);
+    const totalSold = productSales.reduce((sum, s) => sum + s.quantity, 0);
+    const avgDailySales = totalSold / 30;
+    const suggestedQuantity = Math.ceil(avgDailySales * 30) || 20;
+    const estimatedCost = suggestedQuantity * (product.buying_price || 0);
+
+    return {
+      id: product.id,
+      name: product.name,
+      current_stock: product.quantity,
+      low_stock_threshold: product.low_stock_threshold,
+      avg_daily_sales: avgDailySales.toFixed(1),
+      suggested_quantity: suggestedQuantity,
+      estimated_cost: estimatedCost,
+      buying_price: product.buying_price,
+      supplier: product.suppliers,
+      category: product.categories?.name
+    };
+  });
+
+  res.json({ reorder_suggestions: reorderSuggestions });
+});
+
+
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
