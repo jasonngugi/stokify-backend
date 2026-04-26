@@ -17,7 +17,7 @@ app.post('/products', async (req, res) => {
   const { store_id, name, sku, quantity, low_stock_threshold, price, buying_price, supplier_id, category_id } = req.body;
   const { data, error } = await supabase
     .from('products')
-    ..insert([{ store_id, name, sku, quantity, low_stock_threshold, price, buying_price, supplier_id, category_id }])
+    .insert([{ store_id, name, sku, quantity, low_stock_threshold, price, buying_price, supplier_id, category_id }])
     .select();
   if (error) return res.status(400).json({ error: error.message });
   res.status(201).json({ product: data[0] });
