@@ -220,12 +220,14 @@ app.get('/reorder/:store_id', async (req, res) => {
   const { store_id } = req.params;
 
   // Get all products with low stock
-  const { data: products, error: productsError } = await supabase
+  const { data: allProducts, error: productsError } = await supabase
     .from('products')
     .select('*, suppliers(name, phone, contact_email), categories(name)')
-    .eq('store_id', store_id)
-    .filter('quantity', 'lte', supabase.raw('low_stock_threshold'));
+    .eq('store_id', store_id);
 
+  if (productsError) return res.status(400).json({ error: productsError.message });
+
+  const products = allProducts.filter(p => p.quantity <= p.low_stock_threshold);
   if (productsError) return res.status(400).json({ error: productsError.message });
 
   // Get sales from last 30 days
