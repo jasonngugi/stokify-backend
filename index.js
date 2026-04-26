@@ -164,6 +164,38 @@ app.get('/stores/user/:user_id', async (req, res) => {
 });
 
 
+app.post('/categories', async (req, res) => {
+  const { store_id, name } = req.body;
+  const { data, error } = await supabase
+    .from('categories')
+    .insert([{ store_id, name }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ category: data[0] });
+});
+
+app.get('/categories/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('categories')
+    .select('*')
+    .eq('store_id', store_id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ categories: data });
+});
+
+app.delete('/categories/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase
+    .from('categories')
+    .delete()
+    .eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Category deleted successfully' });
+});
+
+
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
