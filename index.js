@@ -165,11 +165,11 @@ app.get('/stores/user/:user_id', async (req, res) => {
   const { user_id } = req.params;
   const { data, error } = await supabase
     .from('users')
-    .select('store_id, stores(*)')
+    .select('store_id, role, stores(*)')
     .eq('id', user_id)
     .single();
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ store: data.stores, store_id: data.store_id });
+  res.json({ store: data.stores, store_id: data.store_id, role: data.role });
 });
 
 app.post('/categories', async (req, res) => {
