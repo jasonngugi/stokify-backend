@@ -379,6 +379,103 @@ app.get('/seasonal/:store_id', async (req, res) => {
   });
 });
 
+app.get('/daily-summary/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  // Today's sales
+  const { data: todaySales, error: todayError } = await supabase
+    .from('sales')
+    .select(`
+      id, total_amount, sold_at,
+      sale_items (
+        quantity, unit_price,
+        products ( name, buying_price )
+      )
+    `)
+    .eq('store_id', store_id)
+    .gte('sold_at', today.toISOString())
+    .lt('sold_at', tomorrow.toISOString());
+
+  if (todayError) return res.status(400).json({ error: todayError.message });
+
+  // Yesterday's sales
+  const { data: yesterdaySales, error: yesterdayError } = await supabase
+    .from('sales')
+    .select('total_amount')
+    .eq('store_id', store_id)
+    .gte('sold_at', yesterday.toISOString())
+    .lt('sold_at', today.toISOString());
+
+  if (yesterdayError) return res.status(400).json({ error: yesterdayError.message });
+
+  // Calculate today's stats
+  const totalRevenue = todaySales.reduce((sum, s) => sum + s.total_amount, 0);
+  const totalTransactions = todaySales.length;
+
+  // Calculate profit
+  let totalCost = 0;
+  const productSales = {};
+
+  todaySales.forEach(sale => {
+    sale.sale_items?.forEach(item => {
+      const cost = (item.products?.buying_price || 0) * item.quantity;
+      totalCost += cost;
+      const name = item.products?.name || 'Unknown';
+      if (!productSales[name]) productSales[name] = { quantity: 0, revenue: 0 };
+      productSales[name].quantity += item.quantity;
+      productSales[name].revenue += item.quantity * item.unit_price;
+    });
+  });
+
+  const totalProfit = totalRevenue - totalCost;
+
+  // Top products
+  const topProducts = Object.entries(productSales)
+    .map(([name, data]) => ({ name, ...data }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 3);
+
+  // Hourly breakdown
+  const hourlyData = {};
+  todaySales.forEach(sale => {
+    const hour = new Date(sale.sold_at).getHours();
+    const label = `${hour}:00`;
+    if (!hourlyData[label]) hourlyData[label] = { hour: label, revenue: 0, transactions: 0 };
+    hourlyData[label].revenue += sale.total_amount;
+    hourlyData[label].transactions += 1;
+  });
+
+  const hourly = Object.values(hourlyData).sort((a, b) => 
+    parseInt(a.hour) - parseInt(b.hour)
+  );
+
+  // Yesterday comparison
+  const yesterdayRevenue = yesterdaySales.reduce((sum, s) => sum + s.total_amount, 0);
+  const revenueChange = yesterdayRevenue > 0
+    ? (((totalRevenue - yesterdayRevenue) / yesterdayRevenue) * 100).toFixed(1)
+    : 0;
+
+  res.json({
+    date: today.toLocaleDateString('en-KE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }),
+    totalRevenue,
+    totalProfit,
+    totalCost,
+    totalTransactions,
+    topProducts,
+    hourly,
+    yesterdayRevenue,
+    revenueChange
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
