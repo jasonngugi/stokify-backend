@@ -476,6 +476,140 @@ app.get('/daily-summary/:store_id', async (req, res) => {
   });
 });
 
+
+app.get('/weekly-summary/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  weekAgo.setHours(0, 0, 0, 0);
+
+  const { data: sales, error } = await supabase
+    .from('sales')
+    .select(`
+      id, total_amount, sold_at,
+      sale_items (
+        quantity, unit_price,
+        products ( name, buying_price )
+      )
+    `)
+    .eq('store_id', store_id)
+    .gte('sold_at', weekAgo.toISOString())
+    .lte('sold_at', today.toISOString())
+    .order('sold_at', { ascending: true });
+
+  if (error) return res.status(400).json({ error: error.message });
+
+  const totalRevenue = sales.reduce((sum, s) => sum + s.total_amount, 0);
+  let totalCost = 0;
+  const productSales = {};
+  const dailyData = {};
+
+  sales.forEach(sale => {
+    const day = new Date(sale.sold_at).toLocaleDateString('en-KE', { weekday: 'short', day: 'numeric', month: 'short' });
+    if (!dailyData[day]) dailyData[day] = { day, revenue: 0, transactions: 0 };
+    dailyData[day].revenue += sale.total_amount;
+    dailyData[day].transactions += 1;
+
+    sale.sale_items?.forEach(item => {
+      const cost = (item.products?.buying_price || 0) * item.quantity;
+      totalCost += cost;
+      const name = item.products?.name || 'Unknown';
+      if (!productSales[name]) productSales[name] = { quantity: 0, revenue: 0 };
+      productSales[name].quantity += item.quantity;
+      productSales[name].revenue += item.quantity * item.unit_price;
+    });
+  });
+
+  const totalProfit = totalRevenue - totalCost;
+  const topProducts = Object.entries(productSales)
+    .map(([name, data]) => ({ name, ...data }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 5);
+
+  const daily = Object.values(dailyData);
+  const bestDay = daily.sort((a, b) => b.revenue - a.revenue)[0];
+
+  res.json({
+    period: `${weekAgo.toLocaleDateString('en-KE', { day: 'numeric', month: 'short' })} - ${today.toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })}`,
+    totalRevenue,
+    totalCost,
+    totalProfit,
+    totalTransactions: sales.length,
+    topProducts,
+    daily: Object.values(dailyData),
+    bestDay
+  });
+});
+
+app.get('/monthly-summary/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const monthAgo = new Date();
+  monthAgo.setDate(monthAgo.getDate() - 30);
+  monthAgo.setHours(0, 0, 0, 0);
+
+  const { data: sales, error } = await supabase
+    .from('sales')
+    .select(`
+      id, total_amount, sold_at,
+      sale_items (
+        quantity, unit_price,
+        products ( name, buying_price )
+      )
+    `)
+    .eq('store_id', store_id)
+    .gte('sold_at', monthAgo.toISOString())
+    .lte('sold_at', today.toISOString())
+    .order('sold_at', { ascending: true });
+
+  if (error) return res.status(400).json({ error: error.message });
+
+  const totalRevenue = sales.reduce((sum, s) => sum + s.total_amount, 0);
+  let totalCost = 0;
+  const productSales = {};
+  const weeklyData = {};
+
+  sales.forEach(sale => {
+    const date = new Date(sale.sold_at);
+    const weekNum = Math.floor((date - monthAgo) / (7 * 24 * 60 * 60 * 1000)) + 1;
+    const weekLabel = `Week ${weekNum}`;
+    if (!weeklyData[weekLabel]) weeklyData[weekLabel] = { week: weekLabel, revenue: 0, transactions: 0 };
+    weeklyData[weekLabel].revenue += sale.total_amount;
+    weeklyData[weekLabel].transactions += 1;
+
+    sale.sale_items?.forEach(item => {
+      const cost = (item.products?.buying_price || 0) * item.quantity;
+      totalCost += cost;
+      const name = item.products?.name || 'Unknown';
+      if (!productSales[name]) productSales[name] = { quantity: 0, revenue: 0 };
+      productSales[name].quantity += item.quantity;
+      productSales[name].revenue += item.quantity * item.unit_price;
+    });
+  });
+
+  const totalProfit = totalRevenue - totalCost;
+  const topProducts = Object.entries(productSales)
+    .map(([name, data]) => ({ name, ...data }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 5);
+
+  res.json({
+    period: `${monthAgo.toLocaleDateString('en-KE', { day: 'numeric', month: 'short' })} - ${today.toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })}`,
+    totalRevenue,
+    totalCost,
+    totalProfit,
+    totalTransactions: sales.length,
+    topProducts,
+    weekly: Object.values(weeklyData),
+    avgDailyRevenue: (totalRevenue / 30).toFixed(0)
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
