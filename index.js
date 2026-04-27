@@ -294,6 +294,45 @@ app.get('/expiry/:store_id', async (req, res) => {
 });
 
 
+app.get('/slowmoving/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const { data: products, error: productsError } = await supabase
+    .from('products')
+    .select('*, categories(name)')
+    .eq('store_id', store_id)
+    .gt('quantity', 0);
+
+  if (productsError) return res.status(400).json({ error: productsError.message });
+
+  const { data: recentSales, error: salesError } = await supabase
+    .from('sale_items')
+    .select('product_id, quantity, sales(sold_at)')
+    .gte('sales.sold_at', thirtyDaysAgo.toISOString());
+
+  if (salesError) return res.status(400).json({ error: salesError.message });
+
+  const soldProductIds = new Set(recentSales.map(s => s.product_id));
+
+  const slowMoving = products
+    .filter(p => !soldProductIds.has(p.id))
+    .map(p => ({
+      id: p.id,
+      name: p.name,
+      quantity: p.quantity,
+      price: p.price,
+      buying_price: p.buying_price,
+      category: p.categories?.name || 'Uncategorised',
+      stock_value: p.quantity * p.buying_price,
+      potential_revenue: p.quantity * p.price
+    }));
+
+  res.json({ slow_moving_products: slowMoving });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
