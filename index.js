@@ -680,6 +680,74 @@ app.get('/breakeven/:store_id', async (req, res) => {
   });
 });
 
+app.get('/cashflow/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  sixMonthsAgo.setHours(0, 0, 0, 0);
+
+  // Get sales (money in)
+  const { data: sales, error: salesError } = await supabase
+    .from('sales')
+    .select('total_amount, sold_at')
+    .eq('store_id', store_id)
+    .gte('sold_at', sixMonthsAgo.toISOString())
+    .order('sold_at', { ascending: true });
+
+  if (salesError) return res.status(400).json({ error: salesError.message });
+
+  // Get expenses (money out)
+  const { data: expenses, error: expensesError } = await supabase
+    .from('expenses')
+    .select('amount, date, name, category')
+    .eq('store_id', store_id)
+    .gte('date', sixMonthsAgo.toISOString().split('T')[0])
+    .order('date', { ascending: true });
+
+  if (expensesError) return res.status(400).json({ error: expensesError.message });
+
+  // Group by month
+  const monthlyData = {};
+
+  sales.forEach(sale => {
+    const date = new Date(sale.sold_at);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const label = date.toLocaleDateString('en-KE', { month: 'short', year: 'numeric' });
+    if (!monthlyData[key]) monthlyData[key] = { month: label, revenue: 0, expenses: 0, net: 0 };
+    monthlyData[key].revenue += sale.total_amount;
+  });
+
+  expenses.forEach(expense => {
+    const date = new Date(expense.date);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const label = date.toLocaleDateString('en-KE', { month: 'short', year: 'numeric' });
+    if (!monthlyData[key]) monthlyData[key] = { month: label, revenue: 0, expenses: 0, net: 0 };
+    monthlyData[key].expenses += expense.amount;
+  });
+
+  // Calculate net cash flow per month
+  Object.values(monthlyData).forEach(m => {
+    m.net = m.revenue - m.expenses;
+  });
+
+  const monthly = Object.values(monthlyData).sort((a, b) => 
+    new Date('01 ' + a.month) - new Date('01 ' + b.month)
+  );
+
+  const totalRevenue = monthly.reduce((sum, m) => sum + m.revenue, 0);
+  const totalExpenses = monthly.reduce((sum, m) => sum + m.expenses, 0);
+  const netCashFlow = totalRevenue - totalExpenses;
+
+  res.json({
+    monthly,
+    totalRevenue,
+    totalExpenses,
+    netCashFlow,
+    recentExpenses: expenses.slice(0, 5)
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
