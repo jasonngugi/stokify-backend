@@ -56,7 +56,7 @@ app.delete('/products/:id', async (req, res) => {
 });
 
 app.post('/sales', async (req, res) => {
-  const { store_id, items } = req.body;
+  const { store_id, items, payment_method = 'cash' } = req.body;
 
   // Check stock levels before processing sale
   for (const item of items) {
@@ -72,6 +72,36 @@ app.post('/sales', async (req, res) => {
       return res.status(400).json({ 
         error: `Not enough stock for ${product.name}. Available: ${product.quantity}, Requested: ${item.quantity}` 
       });
+    }
+  }
+
+  const total_amount = items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+  const { data: sale, error: saleError } = await supabase
+    .from('sales')
+    .insert([{ store_id, total_amount, payment_method }])
+    .select();
+  if (saleError) return res.status(400).json({ error: saleError.message });
+  
+  const saleItems = items.map(item => ({
+    sale_id: sale[0].id,
+    product_id: item.product_id,
+    quantity: item.quantity,
+    unit_price: item.unit_price
+  }));
+  
+  const { error: itemsError } = await supabase
+    .from('sale_items')
+    .insert(saleItems);
+  if (itemsError) return res.status(400).json({ error: itemsError.message });
+  
+  for (const item of items) {
+    await supabase.rpc('decrement_stock', {
+      p_product_id: item.product_id,
+      p_quantity: item.quantity
+    });
+  }
+  res.status(201).json({ sale: sale[0], total_amount });
+});
     }
   }
 
