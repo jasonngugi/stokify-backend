@@ -610,6 +610,76 @@ app.get('/monthly-summary/:store_id', async (req, res) => {
   });
 });
 
+app.post('/expenses', async (req, res) => {
+  const { store_id, name, amount, category, date, is_recurring } = req.body;
+  const { data, error } = await supabase
+    .from('expenses')
+    .insert([{ store_id, name, amount, category, date, is_recurring }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ expense: data[0] });
+});
+
+app.get('/expenses/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('*')
+    .eq('store_id', store_id)
+    .order('date', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ expenses: data });
+});
+
+app.delete('/expenses/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase
+    .from('expenses')
+    .delete()
+    .eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Expense deleted successfully' });
+});
+
+app.get('/breakeven/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  // Get all recurring expenses (fixed costs)
+  const { data: expenses, error: expensesError } = await supabase
+    .from('expenses')
+    .select('*')
+    .eq('store_id', store_id)
+    .eq('is_recurring', true);
+
+  if (expensesError) return res.status(400).json({ error: expensesError.message });
+
+  // Get products to calculate average margin
+  const { data: products, error: productsError } = await supabase
+    .from('products')
+    .select('price, buying_price')
+    .eq('store_id', store_id)
+    .gt('buying_price', 0);
+
+  if (productsError) return res.status(400).json({ error: productsError.message });
+
+  const totalFixedCosts = expenses.reduce((sum, e) => sum + e.amount, 0);
+  
+  const avgMargin = products.length > 0
+    ? products.reduce((sum, p) => sum + ((p.price - p.buying_price) / p.price), 0) / products.length
+    : 0;
+
+  const breakEvenRevenue = avgMargin > 0 ? totalFixedCosts / avgMargin : 0;
+  const breakEvenDaily = breakEvenRevenue / 30;
+
+  res.json({
+    totalFixedCosts,
+    avgMarginPercent: (avgMargin * 100).toFixed(1),
+    breakEvenRevenue,
+    breakEvenDaily,
+    expenses
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
