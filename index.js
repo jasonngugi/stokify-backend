@@ -628,6 +628,38 @@ app.patch('/sales/:id/payment', async (req, res) => {
   res.json({ sale: data[0] });
 });
 
+app.get('/staff/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('store_id', store_id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ staff: data });
+});
+
+app.patch('/staff/:user_id/role', async (req, res) => {
+  const { user_id } = req.params;
+  const { role } = req.body;
+  const { data, error } = await supabase
+    .from('users')
+    .update({ role })
+    .eq('id', user_id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ user: data[0] });
+});
+
+app.delete('/staff/:user_id', async (req, res) => {
+  const { user_id } = req.params;
+  const { error } = await supabase
+    .from('users')
+    .delete()
+    .eq('id', user_id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Staff member removed successfully' });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
