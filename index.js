@@ -333,6 +333,52 @@ app.get('/slowmoving/:store_id', async (req, res) => {
   res.json({ slow_moving_products: slowMoving });
 });
 
+app.get('/seasonal/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const now = new Date();
+  
+  // Get sales for last 6 months
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+  const { data: sales, error } = await supabase
+    .from('sales')
+    .select('total_amount, sold_at')
+    .eq('store_id', store_id)
+    .gte('sold_at', sixMonthsAgo.toISOString())
+    .order('sold_at', { ascending: true });
+
+  if (error) return res.status(400).json({ error: error.message });
+
+  // Group by month
+  const monthlyData = {};
+  sales.forEach(sale => {
+    const date = new Date(sale.sold_at);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const label = date.toLocaleDateString('en-KE', { month: 'short', year: 'numeric' });
+    if (!monthlyData[key]) monthlyData[key] = { month: label, revenue: 0, transactions: 0 };
+    monthlyData[key].revenue += sale.total_amount;
+    monthlyData[key].transactions += 1;
+  });
+
+  const monthly = Object.values(monthlyData);
+
+  // This month vs last month
+  const thisMonth = monthly[monthly.length - 1] || { revenue: 0, transactions: 0 };
+  const lastMonth = monthly[monthly.length - 2] || { revenue: 0, transactions: 0 };
+  const revenueChange = lastMonth.revenue > 0 
+    ? (((thisMonth.revenue - lastMonth.revenue) / lastMonth.revenue) * 100).toFixed(1)
+    : 0;
+
+  res.json({ 
+    monthly,
+    thisMonth,
+    lastMonth,
+    revenueChange
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
