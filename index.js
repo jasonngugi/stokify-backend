@@ -778,6 +778,66 @@ app.get('/cashflow/:store_id', async (req, res) => {
   });
 });
 
+app.post('/customers', async (req, res) => {
+  const { store_id, name, phone, email } = req.body;
+  const { data, error } = await supabase
+    .from('customers')
+    .insert([{ store_id, name, phone, email }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ customer: data[0] });
+});
+
+app.get('/customers/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('store_id', store_id)
+    .order('name', { ascending: true });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ customers: data });
+});
+
+app.delete('/customers/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase
+    .from('customers')
+    .delete()
+    .eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Customer deleted successfully' });
+});
+
+app.get('/credit/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('sales')
+    .select(`
+      id, total_amount, sold_at, payment_method,
+      customers(id, name, phone),
+      sale_items(quantity, unit_price, products(name))
+    `)
+    .eq('store_id', store_id)
+    .eq('payment_method', 'credit')
+    .order('sold_at', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ credit_sales: data });
+});
+
+app.patch('/sales/:id/payment', async (req, res) => {
+  const { id } = req.params;
+  const { payment_method } = req.body;
+  const { data, error } = await supabase
+    .from('sales')
+    .update({ payment_method })
+    .eq('id', id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ sale: data[0] });
+});
+
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
