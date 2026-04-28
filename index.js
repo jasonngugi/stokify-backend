@@ -35,10 +35,10 @@ app.get('/products/:store_id', async (req, res) => {
 
 app.patch('/products/:id', async (req, res) => {
   const { id } = req.params;
-  const { quantity, price, low_stock_threshold } = req.body;
+  const { name, sku, quantity, price, buying_price, low_stock_threshold, supplier_id, category_id, expiry_date } = req.body;
   const { data, error } = await supabase
     .from('products')
-    .update({ quantity, price, low_stock_threshold })
+    .update({ name, sku, quantity, price, buying_price, low_stock_threshold, supplier_id, category_id, expiry_date })
     .eq('id', id)
     .select();
   if (error) return res.status(400).json({ error: error.message });
