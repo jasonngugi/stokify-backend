@@ -716,6 +716,46 @@ app.get('/ai-context/:store_id', async (req, res) => {
   });
 });
 
+app.post('/ai-chat/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { messages, context } = req.body;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: `You are an AI Business Advisor for STOKIFY, an inventory management system. You are helping a shop owner in Kenya understand and improve their business.
+
+Here is the shop's current data for the last 30 days:
+- Total Revenue: KSh ${context?.totalRevenue?.toLocaleString()}
+- Total Profit: KSh ${context?.totalProfit?.toLocaleString()}
+- Total Expenses: KSh ${context?.totalExpenses?.toLocaleString()}
+- Total Transactions: ${context?.totalTransactions}
+- Outstanding Credit: KSh ${context?.totalCredit?.toLocaleString()}
+- Total Products: ${context?.products}
+- Low Stock Items: ${context?.lowStockCount} (${context?.lowStockItems?.join(', ')})
+- Top Selling Products: ${context?.topProducts?.map(p => `${p.name} (${p.qty} units)`).join(', ')}
+
+Give practical, actionable advice specific to this shop's data. Use KSh for currency. Keep responses concise and friendly. Use bullet points where helpful. Focus on what will actually help a small Kenyan shop owner grow their business.`,
+        messages: messages
+      })
+    });
+
+    const data = await response.json();
+    res.json({ response: data.content[0].text });
+  } catch (err) {
+    console.error('AI error:', err);
+    res.status(500).json({ error: 'AI service unavailable' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
