@@ -660,6 +660,62 @@ app.delete('/staff/:user_id', async (req, res) => {
   res.json({ message: 'Staff member removed successfully' });
 });
 
+app.get('/ai-context/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const [products, sales, expenses, creditSales] = await Promise.all([
+    supabase.from('products').select('*, categories(name)').eq('store_id', store_id),
+    supabase.from('sales').select(`total_amount, sold_at, payment_method, sale_items(quantity, unit_price, products(name, buying_price))`).eq('store_id', store_id).gte('sold_at', thirtyDaysAgo.toISOString()),
+    supabase.from('expenses').select('*').eq('store_id', store_id).gte('date', thirtyDaysAgo.toISOString().split('T')[0]),
+    supabase.from('sales').select('total_amount, customers(name)').eq('store_id', store_id).eq('payment_method', 'credit')
+  ]);
+
+  const totalRevenue = sales.data?.reduce((sum, s) => sum + s.total_amount, 0) || 0;
+  const totalExpenses = expenses.data?.reduce((sum, e) => sum + e.amount, 0) || 0;
+  const totalCost = sales.data?.reduce((sum, s) => sum + (s.sale_items?.reduce((a, i) => a + (i.products?.buying_price || 0) * i.quantity, 0) || 0), 0) || 0;
+  const totalProfit = totalRevenue - totalCost;
+  const totalCredit = creditSales.data?.reduce((sum, s) => sum + s.total_amount, 0) || 0;
+
+  const productSales = {};
+  sales.data?.forEach(sale => {
+    sale.sale_items?.forEach(item => {
+      const name = item.products?.name || 'Unknown';
+      if (!productSales[name]) productSales[name] = 0;
+      productSales[name] += item.quantity;
+    });
+  });
+
+  const topProducts = Object.entries(productSales)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, qty]) => ({ name, qty }));
+
+  const lowStock = products.data?.filter(p => p.quantity <= p.low_stock_threshold) || [];
+
+  res.json({
+    summary: {
+      totalRevenue,
+      totalExpenses,
+      totalProfit,
+      totalCredit,
+      totalTransactions: sales.data?.length || 0,
+      products: products.data?.length || 0,
+      lowStockCount: lowStock.length,
+      lowStockItems: lowStock.map(p => p.name),
+      topProducts,
+      period: 'last 30 days'
+    }
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
