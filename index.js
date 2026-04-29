@@ -756,6 +756,18 @@ Give practical, actionable advice specific to this shop's data. Use KSh for curr
   }
 });
 
+app.patch('/stores/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { name } = req.body;
+  const { data, error } = await supabase
+    .from('stores')
+    .update({ name })
+    .eq('id', store_id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ store: data[0] });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
