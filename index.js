@@ -764,6 +764,78 @@ Give practical, actionable advice specific to this shop's data. Use KSh for curr
   }
 });
 
+app.get('/analytics/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const [productsRes, salesRes, expensesRes] = await Promise.all([
+    supabase.from('products').select('*, categories(name)').eq('store_id', store_id),
+    supabase.from('sales').select(`total_amount, sold_at, sale_items(quantity, unit_price, products(name, buying_price, category_id, categories(name)))`).eq('store_id', store_id).gte('sold_at', thirtyDaysAgo.toISOString()),
+    supabase.from('expenses').select('amount').eq('store_id', store_id).gte('date', thirtyDaysAgo.toISOString().split('T')[0])
+  ]);
+
+  const products = productsRes.data || [];
+  const sales = salesRes.data || [];
+  const expenses = expensesRes.data || [];
+
+  const categoryStats = {};
+  products.forEach(p => {
+    const cat = p.categories?.name || 'Uncategorised';
+    if (!categoryStats[cat]) categoryStats[cat] = { name: cat, products: 0, stockValue: 0, potentialProfit: 0, revenue: 0, unitsSold: 0 };
+    categoryStats[cat].products += 1;
+    categoryStats[cat].stockValue += p.quantity * p.buying_price;
+    categoryStats[cat].potentialProfit += (p.price - p.buying_price) * p.quantity;
+  });
+
+  const productStats = {};
+  sales.forEach(sale => {
+    sale.sale_items?.forEach(item => {
+      const name = item.products?.name || 'Unknown';
+      const cat = item.products?.categories?.name || 'Uncategorised';
+      if (!productStats[name]) productStats[name] = { name, category: cat, revenue: 0, unitsSold: 0, profit: 0 };
+      productStats[name].revenue += item.quantity * item.unit_price;
+      productStats[name].unitsSold += item.quantity;
+      productStats[name].profit += item.quantity * (item.unit_price - (item.products?.buying_price || 0));
+      if (categoryStats[cat]) categoryStats[cat].revenue += item.quantity * item.unit_price;
+      if (categoryStats[cat]) categoryStats[cat].unitsSold += item.quantity;
+    });
+  });
+
+  const dayStats = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  sales.forEach(sale => {
+    const day = days[new Date(sale.sold_at).getDay()];
+    dayStats[day] += sale.total_amount;
+  });
+
+  const totalRevenue = sales.reduce((sum, s) => sum + s.total_amount, 0);
+  const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
+  const totalCost = sales.reduce((sum, s) => sum + (s.sale_items?.reduce((a, i) => a + (i.products?.buying_price || 0) * i.quantity, 0) || 0), 0);
+  const grossProfit = totalRevenue - totalCost;
+  const netProfit = grossProfit - totalExpenses;
+  const avgOrderValue = sales.length > 0 ? totalRevenue / sales.length : 0;
+
+  const topProducts = Object.values(productStats).sort((a, b) => b.revenue - a.revenue).slice(0, 10);
+  const mostProfitable = Object.values(productStats).sort((a, b) => b.profit - a.profit).slice(0, 5);
+  const worstPerforming = Object.values(productStats).sort((a, b) => a.revenue - b.revenue).slice(0, 5);
+
+  const lowStockCount = products.filter(p => p.quantity <= p.low_stock_threshold).length;
+  const deadStockCount = products.filter(p => p.quantity > 0).length - Object.keys(productStats).length;
+  const inventoryHealthScore = Math.max(0, 100 - (lowStockCount * 5) - (deadStockCount * 3));
+
+  res.json({
+    overview: { totalRevenue, totalExpenses, grossProfit, netProfit, avgOrderValue, totalTransactions: sales.length },
+    categoryStats: Object.values(categoryStats),
+    topProducts,
+    mostProfitable,
+    worstPerforming,
+    dayOfWeek: Object.entries(dayStats).map(([day, revenue]) => ({ day, revenue })),
+    inventoryHealth: { score: inventoryHealthScore, lowStockCount, deadStockCount, totalProducts: products.length }
+  });
+});
+
 app.patch('/stores/:store_id', async (req, res) => {
   const { store_id } = req.params;
   const { name } = req.body;
