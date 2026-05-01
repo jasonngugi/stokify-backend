@@ -157,15 +157,33 @@ app.delete('/suppliers/:id', async (req, res) => {
 
 app.post('/stores', async (req, res) => {
   const { name, user_id } = req.body;
-  const { data, error } = await supabase
+
+  if (!name || !user_id) {
+    return res.status(400).json({ error: 'Store name and user ID are required' });
+  }
+
+  // Create the store
+  const { data: storeData, error: storeError } = await supabase
     .from('stores')
     .insert([{ name }])
     .select();
-  if (error) return res.status(400).json({ error: error.message });
-  const store = data[0];
+  if (storeError) return res.status(400).json({ error: storeError.message });
+
+  const store = storeData[0];
+
+  // Create the user record linked to the store
   const { error: userError } = await supabase
     .from('users')
-    .insert([{ store_id: store.id, name: name, email: '', role: 'owner', id: user_id }]);
+    .insert([{
+      id: user_id,
+      store_id: store.id,
+      name: name,
+      email: '',
+      role: 'owner'
+    }]);
+
+  if (userError) return res.status(400).json({ error: userError.message });
+
   res.status(201).json({ store });
 });
 
