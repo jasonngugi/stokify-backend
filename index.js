@@ -164,12 +164,27 @@ app.post('/stores', async (req, res) => {
     return res.status(400).json({ error: 'Store name and user ID are required' });
   }
 
+  // Check if user already has a store
+  const { data: existingUser } = await supabase
+    .from('users')
+    .select('store_id, stores(*)')
+    .eq('id', user_id)
+    .single();
+
+  if (existingUser) {
+    console.log('User already has a store, returning existing store');
+    return res.status(201).json({ store: existingUser.stores });
+  }
+
   // Create the store
   const { data: storeData, error: storeError } = await supabase
     .from('stores')
     .insert([{ name }])
     .select();
-  if (storeError) return res.status(400).json({ error: storeError.message });
+  if (storeError) {
+    console.log('Store creation error:', storeError.message);
+    return res.status(400).json({ error: storeError.message });
+  }
 
   const store = storeData[0];
 
@@ -184,8 +199,12 @@ app.post('/stores', async (req, res) => {
       role: 'owner'
     }]);
 
-  if (userError) return res.status(400).json({ error: userError.message });
+  if (userError) {
+    console.log('User creation error:', userError.message);
+    return res.status(400).json({ error: userError.message });
+  }
 
+  console.log('Store created successfully:', store.id);
   res.status(201).json({ store });
 });
 
