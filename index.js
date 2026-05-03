@@ -156,9 +156,11 @@ app.delete('/suppliers/:id', async (req, res) => {
 });
 
 app.post('/stores', async (req, res) => {
+  console.log('POST /stores called with body:', req.body);
   const { name, user_id } = req.body;
 
   if (!name || !user_id) {
+    console.log('Missing name or user_id');
     return res.status(400).json({ error: 'Store name and user ID are required' });
   }
 
