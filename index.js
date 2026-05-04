@@ -251,25 +251,68 @@ app.delete('/categories/:id', async (req, res) => {
 
 app.get('/reorder/:store_id', async (req, res) => {
   const { store_id } = req.params;
+
+  const { data: storeData } = await supabase
+    .from('stores')
+    .select('business_type')
+    .eq('id', store_id)
+    .single();
+
+  const businessType = storeData?.business_type || 'general';
+
   const { data: allProducts, error: productsError } = await supabase
     .from('products')
     .select('*, suppliers(name, phone, contact_email), categories(name)')
     .eq('store_id', store_id);
+
   if (productsError) return res.status(400).json({ error: productsError.message });
+
   const products = allProducts.filter(p => p.quantity <= p.low_stock_threshold);
+
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
   const { data: salesData, error: salesError } = await supabase
     .from('sale_items')
     .select('product_id, quantity, sales(sold_at)')
     .gte('sales.sold_at', thirtyDaysAgo.toISOString());
+
   if (salesError) return res.status(400).json({ error: salesError.message });
+
+  // Business type settings
+  const businessSettings = {
+    general:     { cycleDays: 30, safetyMultiplier: 1.2 },
+    restaurant:  { cycleDays: 7,  safetyMultiplier: 1.5 },
+    pharmacy:    { cycleDays: 14, safetyMultiplier: 1.3 },
+    clothing:    { cycleDays: 60, safetyMultiplier: 1.1 },
+    electronics: { cycleDays: 60, safetyMultiplier: 1.1 },
+    hardware:    { cycleDays: 45, safetyMultiplier: 1.2 },
+    agrovet:     { cycleDays: 30, safetyMultiplier: 1.3 },
+    cosmetics:   { cycleDays: 30, safetyMultiplier: 1.2 },
+    supermarket: { cycleDays: 14, safetyMultiplier: 1.4 },
+    other:       { cycleDays: 30, safetyMultiplier: 1.2 },
+  };
+
+  const settings = businessSettings[businessType] || businessSettings.general;
+
   const reorderSuggestions = products.map(product => {
     const productSales = salesData.filter(s => s.product_id === product.id);
     const totalSold = productSales.reduce((sum, s) => sum + s.quantity, 0);
     const avgDailySales = totalSold / 30;
-    const suggestedQuantity = Math.ceil(avgDailySales * 30) || 20;
+
+    // Smart reorder quantity based on business type
+    const baseSuggested = Math.ceil(avgDailySales * settings.cycleDays);
+    const suggestedQuantity = Math.max(
+      Math.ceil(baseSuggested * settings.safetyMultiplier),
+      product.low_stock_threshold * 2,
+      20
+    );
+
     const estimatedCost = suggestedQuantity * (product.buying_price || 0);
+    const daysOfStockLeft = avgDailySales > 0 ? Math.floor(product.quantity / avgDailySales) : null;
+    const urgency = daysOfStockLeft !== null && daysOfStockLeft <= 3 ? 'critical' :
+                    daysOfStockLeft !== null && daysOfStockLeft <= 7 ? 'high' : 'normal';
+
     return {
       id: product.id,
       name: product.name,
@@ -280,10 +323,18 @@ app.get('/reorder/:store_id', async (req, res) => {
       estimated_cost: estimatedCost,
       buying_price: product.buying_price,
       supplier: product.suppliers,
-      category: product.categories?.name
+      category: product.categories?.name,
+      days_of_stock_left: daysOfStockLeft,
+      urgency,
+      cycle_days: settings.cycleDays,
     };
   });
-  res.json({ reorder_suggestions: reorderSuggestions });
+
+  // Sort by urgency
+  const urgencyOrder = { critical: 0, high: 1, normal: 2 };
+  reorderSuggestions.sort((a, b) => urgencyOrder[a.urgency] - urgencyOrder[b.urgency]);
+
+  res.json({ reorder_suggestions: reorderSuggestions, business_type: businessType });
 });
 
 app.get('/expiry/:store_id', async (req, res) => {
