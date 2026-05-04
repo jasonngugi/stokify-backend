@@ -887,6 +887,91 @@ app.patch('/stores/:store_id', async (req, res) => {
   res.json({ store: data[0] });
 });
 
+app.get('/accounting/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { period = 'monthly' } = req.query;
+
+  const now = new Date();
+  let startDate = new Date();
+
+  if (period === 'monthly') {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  } else if (period === 'quarterly') {
+    const quarter = Math.floor(now.getMonth() / 3);
+    startDate = new Date(now.getFullYear(), quarter * 3, 1);
+  } else if (period === 'annually') {
+    startDate = new Date(now.getFullYear(), 0, 1);
+  }
+
+  const [salesRes, expensesRes, productsRes, creditRes] = await Promise.all([
+    supabase.from('sales').select(`total_amount, sold_at, payment_method, sale_items(quantity, unit_price, products(buying_price, name))`).eq('store_id', store_id).gte('sold_at', startDate.toISOString()).neq('payment_method', 'credit'),
+    supabase.from('expenses').select('*').eq('store_id', store_id).gte('date', startDate.toISOString().split('T')[0]),
+    supabase.from('products').select('*, categories(name)').eq('store_id', store_id),
+    supabase.from('sales').select('total_amount, customers(name)').eq('store_id', store_id).eq('payment_method', 'credit')
+  ]);
+
+  const sales = salesRes.data || [];
+  const expenses = expensesRes.data || [];
+  const products = productsRes.data || [];
+  const creditSales = creditRes.data || [];
+
+  // Income Statement
+  const revenue = sales.reduce((sum, s) => sum + s.total_amount, 0);
+  const cogs = sales.reduce((sum, s) => sum + (s.sale_items?.reduce((a, i) => a + (i.products?.buying_price || 0) * i.quantity, 0) || 0), 0);
+  const grossProfit = revenue - cogs;
+  const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
+  const netProfit = grossProfit - totalExpenses;
+
+  // Expense breakdown by category
+  const expensesByCategory = expenses.reduce((acc, e) => {
+    if (!acc[e.category]) acc[e.category] = 0;
+    acc[e.category] += e.amount;
+    return acc;
+  }, {});
+
+  // Balance Sheet
+  const stockValue = products.reduce((sum, p) => sum + p.quantity * (p.buying_price || 0), 0);
+  const accountsReceivable = creditSales.reduce((sum, s) => sum + s.total_amount, 0);
+  const totalAssets = stockValue + accountsReceivable + netProfit;
+  const totalLiabilities = expenses.filter(e => !e.is_recurring).reduce((sum, e) => sum + e.amount, 0);
+  const ownersEquity = totalAssets - totalLiabilities;
+
+  // Payment method breakdown
+  const paymentBreakdown = sales.reduce((acc, s) => {
+    if (!acc[s.payment_method]) acc[s.payment_method] = 0;
+    acc[s.payment_method] += s.total_amount;
+    return acc;
+  }, {});
+
+  res.json({
+    period,
+    startDate: startDate.toISOString().split('T')[0],
+    endDate: now.toISOString().split('T')[0],
+    incomeStatement: {
+      revenue,
+      cogs,
+      grossProfit,
+      grossMargin: revenue > 0 ? ((grossProfit / revenue) * 100).toFixed(1) : 0,
+      expenses: totalExpenses,
+      expensesByCategory,
+      netProfit,
+      netMargin: revenue > 0 ? ((netProfit / revenue) * 100).toFixed(1) : 0
+    },
+    balanceSheet: {
+      assets: {
+        stockValue,
+        accountsReceivable,
+        total: totalAssets
+      },
+      liabilities: {
+        total: totalLiabilities
+      },
+      ownersEquity
+    },
+    paymentBreakdown
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
