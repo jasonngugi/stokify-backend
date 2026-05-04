@@ -157,7 +157,7 @@ app.delete('/suppliers/:id', async (req, res) => {
 
 app.post('/stores', async (req, res) => {
   console.log('POST /stores called with body:', req.body);
-  const { name, user_id } = req.body;
+  const { name, user_id, business_type = 'general' } = req.body;
 
   if (!name || !user_id) {
     console.log('Missing name or user_id');
@@ -179,7 +179,7 @@ app.post('/stores', async (req, res) => {
   // Create the store
   const { data: storeData, error: storeError } = await supabase
     .from('stores')
-    .insert([{ name }])
+    .insert([{ name, business_type }])
     .select();
   if (storeError) {
     console.log('Store creation error:', storeError.message);
@@ -216,7 +216,7 @@ app.get('/stores/user/:user_id', async (req, res) => {
     .eq('id', user_id)
     .single();
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ store: data.stores, store_id: data.store_id, role: data.role });
+  res.json({ store: data.stores, store_id: data.store_id, role: data.role, business_type: data.stores?.business_type });
 });
 
 app.post('/categories', async (req, res) => {
