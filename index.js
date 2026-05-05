@@ -126,13 +126,25 @@ app.get('/sales/:store_id', async (req, res) => {
 });
 
 app.post('/suppliers', async (req, res) => {
-  const { store_id, name, contact_email, phone } = req.body;
+  const { store_id, name, contact_email, phone, lead_time_days } = req.body;
   const { data, error } = await supabase
     .from('suppliers')
-    .insert([{ store_id, name, contact_email, phone }])
+    .insert([{ store_id, name, contact_email, phone, lead_time_days: lead_time_days || 3 }])
     .select();
   if (error) return res.status(400).json({ error: error.message });
   res.status(201).json({ supplier: data[0] });
+});
+
+app.patch('/suppliers/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, contact_email, phone, lead_time_days } = req.body;
+  const { data, error } = await supabase
+    .from('suppliers')
+    .update({ name, contact_email, phone, lead_time_days })
+    .eq('id', id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ supplier: data[0] });
 });
 
 app.get('/suppliers/:store_id', async (req, res) => {
