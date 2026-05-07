@@ -1035,6 +1035,139 @@ app.get('/accounting/:store_id', async (req, res) => {
   });
 });
 
+// Get all branches for a store
+app.get('/branches/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('stores')
+    .select('*')
+    .eq('parent_store_id', store_id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ branches: data });
+});
+
+// Add a new branch
+app.post('/branches', async (req, res) => {
+  const { parent_store_id, name, location, business_type, user_id } = req.body;
+
+  const { data: storeData, error: storeError } = await supabase
+    .from('stores')
+    .insert([{ name, location, business_type, parent_store_id, is_branch: true }])
+    .select();
+  if (storeError) return res.status(400).json({ error: storeError.message });
+
+  const store = storeData[0];
+
+  const { error: userError } = await supabase
+    .from('users')
+    .insert([{ id: user_id, store_id: store.id, name, email: '', role: 'manager' }]);
+  if (userError) return res.status(400).json({ error: userError.message });
+
+  res.status(201).json({ branch: store });
+});
+
+// Get overview of all locations
+app.get('/overview/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const { data: branches } = await supabase
+    .from('stores')
+    .select('*')
+    .eq('parent_store_id', store_id);
+
+  const allStoreIds = [store_id, ...(branches || []).map(b => b.id)];
+
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const locationStats = await Promise.all(allStoreIds.map(async (sid) => {
+    const [storeRes, salesRes, productsRes] = await Promise.all([
+      supabase.from('stores').select('*').eq('id', sid).single(),
+      supabase.from('sales').select('total_amount').eq('store_id', sid).gte('sold_at', thirtyDaysAgo.toISOString()),
+      supabase.from('products').select('quantity, buying_price, low_stock_threshold').eq('store_id', sid)
+    ]);
+
+    const revenue = salesRes.data?.reduce((sum, s) => sum + s.total_amount, 0) || 0;
+    const stockValue = productsRes.data?.reduce((sum, p) => sum + p.quantity * (p.buying_price || 0), 0) || 0;
+    const lowStock = productsRes.data?.filter(p => p.quantity <= p.low_stock_threshold).length || 0;
+
+    return {
+      id: sid,
+      name: storeRes.data?.name,
+      location: storeRes.data?.location,
+      is_branch: storeRes.data?.is_branch,
+      revenue,
+      stockValue,
+      lowStock,
+      transactions: salesRes.data?.length || 0
+    };
+  }));
+
+  res.json({ locations: locationStats });
+});
+
+// Stock transfer between branches
+app.post('/stock-transfer', async (req, res) => {
+  const { from_store_id, to_store_id, product_id, quantity, transferred_by, notes } = req.body;
+
+  const { data: product } = await supabase
+    .from('products')
+    .select('quantity, name')
+    .eq('id', product_id)
+    .single();
+
+  if (!product || product.quantity < quantity) {
+    return res.status(400).json({ error: `Not enough stock. Available: ${product?.quantity || 0}` });
+  }
+
+  await supabase
+    .from('products')
+    .update({ quantity: product.quantity - quantity })
+    .eq('id', product_id);
+
+  const { data: destProduct } = await supabase
+    .from('products')
+    .select('*')
+    .eq('store_id', to_store_id)
+    .eq('name', product.name)
+    .single();
+
+  if (destProduct) {
+    await supabase
+      .from('products')
+      .update({ quantity: destProduct.quantity + quantity })
+      .eq('id', destProduct.id);
+  } else {
+    const { data: sourceProduct } = await supabase
+      .from('products')
+      .select('*')
+      .eq('id', product_id)
+      .single();
+
+    await supabase
+      .from('products')
+      .insert([{ ...sourceProduct, id: undefined, store_id: to_store_id, quantity }]);
+  }
+
+  await supabase
+    .from('stock_transfers')
+    .insert([{ from_store_id, to_store_id, product_name: product.name, quantity, transferred_by, notes }]);
+
+  res.json({ message: 'Stock transferred successfully' });
+});
+
+// Get transfer history
+app.get('/stock-transfers/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('stock_transfers')
+    .select('*')
+    .or(`from_store_id.eq.${store_id},to_store_id.eq.${store_id}`)
+    .order('transferred_at', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ transfers: data });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
