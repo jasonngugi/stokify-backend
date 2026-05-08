@@ -1108,6 +1108,7 @@ app.get('/overview/:store_id', async (req, res) => {
 
 // Stock transfer between branches
 app.post('/stock-transfer', async (req, res) => {
+  console.log('Stock transfer request:', req.body);
   const { from_store_id, to_store_id, product_id, quantity, transferred_by, notes } = req.body;
 
   const { data: product } = await supabase
@@ -1153,6 +1154,7 @@ app.post('/stock-transfer', async (req, res) => {
     .from('stock_transfers')
     .insert([{ from_store_id, to_store_id, product_name: product.name, quantity, transferred_by, notes }]);
 
+  console.log('Transfer recorded successfully');
   res.json({ message: 'Stock transferred successfully' });
 });
 
@@ -1166,6 +1168,79 @@ app.get('/stock-transfers/:store_id', async (req, res) => {
     .order('transferred_at', { ascending: false });
   if (error) return res.status(400).json({ error: error.message });
   res.json({ transfers: data });
+});
+
+// Assign staff to a branch
+app.patch('/staff/:user_id/branch', async (req, res) => {
+  const { user_id } = req.params;
+  const { branch_id } = req.body;
+  const { data, error } = await supabase
+    .from('users')
+    .update({ branch_id })
+    .eq('id', user_id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ user: data[0] });
+});
+
+// Get staff for a specific branch
+app.get('/branch-staff/:branch_id', async (req, res) => {
+  const { branch_id } = req.params;
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('branch_id', branch_id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ staff: data });
+});
+
+// Get branch performance comparison
+app.get('/branch-comparison/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const { data: branches } = await supabase
+    .from('stores')
+    .select('*')
+    .eq('parent_store_id', store_id);
+
+  const allStoreIds = [store_id, ...(branches || []).map(b => b.id)];
+
+  const comparison = await Promise.all(allStoreIds.map(async (sid) => {
+    const [storeRes, salesRes, productsRes, expensesRes] = await Promise.all([
+      supabase.from('stores').select('*').eq('id', sid).single(),
+      supabase.from('sales').select(`total_amount, sale_items(quantity, unit_price, products(buying_price))`).eq('store_id', sid).gte('sold_at', thirtyDaysAgo.toISOString()),
+      supabase.from('products').select('quantity, buying_price, low_stock_threshold, price').eq('store_id', sid),
+      supabase.from('expenses').select('amount').eq('store_id', sid).gte('date', thirtyDaysAgo.toISOString().split('T')[0])
+    ]);
+
+    const revenue = salesRes.data?.reduce((sum, s) => sum + s.total_amount, 0) || 0;
+    const cogs = salesRes.data?.reduce((sum, s) => sum + (s.sale_items?.reduce((a, i) => a + (i.products?.buying_price || 0) * i.quantity, 0) || 0), 0) || 0;
+    const expenses = expensesRes.data?.reduce((sum, e) => sum + e.amount, 0) || 0;
+    const grossProfit = revenue - cogs;
+    const netProfit = grossProfit - expenses;
+    const stockValue = productsRes.data?.reduce((sum, p) => sum + p.quantity * (p.buying_price || 0), 0) || 0;
+    const lowStock = productsRes.data?.filter(p => p.quantity <= p.low_stock_threshold).length || 0;
+
+    return {
+      id: sid,
+      name: storeRes.data?.name,
+      location: storeRes.data?.location,
+      is_branch: storeRes.data?.is_branch || false,
+      revenue,
+      grossProfit,
+      netProfit,
+      expenses,
+      stockValue,
+      lowStock,
+      transactions: salesRes.data?.length || 0,
+      avgOrderValue: salesRes.data?.length > 0 ? revenue / salesRes.data.length : 0
+    };
+  }));
+
+  res.json({ comparison });
 });
 
 app.listen(PORT, () => {
