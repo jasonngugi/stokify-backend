@@ -224,11 +224,16 @@ app.get('/stores/user/:user_id', async (req, res) => {
   const { user_id } = req.params;
   const { data, error } = await supabase
     .from('users')
-    .select('store_id, role, stores(*)')
+    .select('store_id, role, stores!users_store_id_fkey(*)')
     .eq('id', user_id)
     .single();
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ store: data.stores, store_id: data.store_id, role: data.role, business_type: data.stores?.business_type });
+  res.json({
+    store: data.stores,
+    store_id: data.store_id,
+    role: data.role,
+    business_type: data.stores?.business_type
+  });
 });
 
 app.post('/categories', async (req, res) => {
