@@ -1248,6 +1248,99 @@ app.get('/branch-comparison/:store_id', async (req, res) => {
   res.json({ comparison });
 });
 
+// Update staff profile and salary
+app.patch('/staff/:user_id/profile', async (req, res) => {
+  const { user_id } = req.params;
+  const { name, phone, id_number, job_title, salary, pay_frequency, contract_type, date_joined } = req.body;
+  const { data, error } = await supabase
+    .from('users')
+    .update({ name, phone, id_number, job_title, salary, pay_frequency, contract_type, date_joined })
+    .eq('id', user_id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ user: data[0] });
+});
+
+// Get payroll records for a store
+app.get('/payroll/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('payroll')
+    .select('*, users(name, job_title, email)')
+    .eq('store_id', store_id)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ payroll: data });
+});
+
+// Create payroll record
+app.post('/payroll', async (req, res) => {
+  const { store_id, user_id, amount, period_start, period_end, payment_date, payment_method, notes } = req.body;
+  const { data, error } = await supabase
+    .from('payroll')
+    .insert([{ store_id, user_id, amount, period_start, period_end, payment_date, payment_method, notes }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ payroll: data[0] });
+});
+
+// Update payroll status
+app.patch('/payroll/:id', async (req, res) => {
+  const { id } = req.params;
+  const { status, amount, payment_method, notes, payment_date } = req.body;
+  const { data, error } = await supabase
+    .from('payroll')
+    .update({ status, amount, payment_method, notes, payment_date })
+    .eq('id', id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ payroll: data[0] });
+});
+
+// Delete payroll record
+app.delete('/payroll/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase
+    .from('payroll')
+    .delete()
+    .eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Payroll record deleted' });
+});
+
+// Generate payroll for all staff
+app.post('/payroll/generate/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { period_start, period_end, payment_date } = req.body;
+
+  const { data: staff, error: staffError } = await supabase
+    .from('users')
+    .select('*')
+    .eq('store_id', store_id)
+    .neq('role', 'owner')
+    .gt('salary', 0);
+
+  if (staffError) return res.status(400).json({ error: staffError.message });
+
+  const payrollRecords = staff.map(member => ({
+    store_id,
+    user_id: member.id,
+    amount: member.salary,
+    period_start,
+    period_end,
+    payment_date,
+    status: 'pending',
+    payment_method: 'cash'
+  }));
+
+  const { data, error } = await supabase
+    .from('payroll')
+    .insert(payrollRecords)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ payroll: data, message: `Generated ${data.length} payroll records` });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
