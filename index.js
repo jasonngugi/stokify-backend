@@ -13,6 +13,14 @@ app.get('/', (req, res) => {
   res.json({ message: 'Inventory app backend is running! v2' });
 });
 
+app.get('/debug/tables', async (req, res) => {
+  const { data, error } = await supabase
+    .from('information_schema.tables')
+    .select('table_name')
+    .eq('table_schema', 'public');
+  res.json({ tables: data, error: error?.message });
+});
+
 app.post('/products', async (req, res) => {
   const { store_id, name, sku, quantity, low_stock_threshold, price, buying_price, supplier_id, category_id, expiry_date } = req.body;
   const { data, error } = await supabase
@@ -1339,6 +1347,341 @@ app.post('/payroll/generate/:store_id', async (req, res) => {
     .select();
   if (error) return res.status(400).json({ error: error.message });
   res.status(201).json({ payroll: data, message: `Generated ${data.length} payroll records` });
+});
+
+// ── VAT ───────────────────────────────────────────────────────────────────────
+
+app.get('/vat/config/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('vat_config')
+    .select('*')
+    .eq('store_id', store_id)
+    .single();
+  if (error && error.code !== 'PGRST116') return res.status(400).json({ error: error.message });
+  res.json({ config: data || null });
+});
+
+app.post('/vat/config', async (req, res) => {
+  const { store_id, vat_registered, vat_number, vat_rate, effective_date } = req.body;
+  const { data, error } = await supabase
+    .from('vat_config')
+    .upsert(
+      { store_id, vat_registered, vat_number, vat_rate, effective_date, updated_at: new Date().toISOString() },
+      { onConflict: 'store_id' }
+    )
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ config: data[0] });
+});
+
+app.get('/vat/return/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { start_date, end_date } = req.query;
+
+  const now = new Date();
+  const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+  const defaultEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+  const from = start_date || defaultStart;
+  const to   = end_date   || defaultEnd;
+
+  // Get VAT config for the store's rate
+  const { data: config } = await supabase
+    .from('vat_config')
+    .select('vat_rate')
+    .eq('store_id', store_id)
+    .single();
+  const vatRate = config?.vat_rate ?? 16;
+  const vatFactor = vatRate / 100;
+
+  // Output VAT — from sales in the period
+  const { data: sales, error: salesError } = await supabase
+    .from('sales')
+    .select('total_amount, sold_at, payment_method')
+    .eq('store_id', store_id)
+    .gte('sold_at', `${from}T00:00:00`)
+    .lte('sold_at', `${to}T23:59:59`);
+  if (salesError) return res.status(400).json({ error: salesError.message });
+
+  // Input VAT — from expenses in the period
+  const { data: expenses, error: expensesError } = await supabase
+    .from('expenses')
+    .select('amount, date, category, description')
+    .eq('store_id', store_id)
+    .gte('date', from)
+    .lte('date', to);
+  if (expensesError) return res.status(400).json({ error: expensesError.message });
+
+  // Build output VAT entries (VAT is inclusive — extract from gross)
+  const outputEntries = (sales || []).map(s => {
+    const gross  = s.total_amount || 0;
+    const net    = parseFloat((gross / (1 + vatFactor)).toFixed(2));
+    const vat    = parseFloat((gross - net).toFixed(2));
+    return {
+      source: 'sale',
+      description: `Sale — ${s.payment_method || 'cash'}`,
+      entry_date: s.sold_at?.split('T')[0],
+      net_amount: net,
+      vat_amount: vat,
+      gross_amount: gross,
+    };
+  });
+
+  // Build input VAT entries (assume VAT-inclusive expenses)
+  const inputEntries = (expenses || []).map(e => {
+    const gross = e.amount || 0;
+    const net   = parseFloat((gross / (1 + vatFactor)).toFixed(2));
+    const vat   = parseFloat((gross - net).toFixed(2));
+    return {
+      source: 'expense',
+      description: e.description || e.category || 'Expense',
+      entry_date: e.date,
+      net_amount: net,
+      vat_amount: vat,
+      gross_amount: gross,
+    };
+  });
+
+  const totalOutputVat  = outputEntries.reduce((s, e) => s + e.vat_amount, 0);
+  const totalInputVat   = inputEntries.reduce((s, e) => s + e.vat_amount, 0);
+  const netVatPayable   = parseFloat((totalOutputVat - totalInputVat).toFixed(2));
+  const totalOutputNet  = outputEntries.reduce((s, e) => s + e.net_amount, 0);
+  const totalInputNet   = inputEntries.reduce((s, e) => s + e.net_amount, 0);
+
+  res.json({
+    period: { from, to },
+    vat_rate: vatRate,
+    summary: {
+      output_vat: parseFloat(totalOutputVat.toFixed(2)),
+      input_vat:  parseFloat(totalInputVat.toFixed(2)),
+      net_vat_payable: netVatPayable,
+      total_output_net: parseFloat(totalOutputNet.toFixed(2)),
+      total_input_net:  parseFloat(totalInputNet.toFixed(2)),
+    },
+    output_entries: outputEntries,
+    input_entries:  inputEntries,
+  });
+});
+
+// ── INVOICES ─────────────────────────────────────────────────────────────────
+
+app.get('/invoices/:store_id/summary', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('status, total')
+    .eq('store_id', store_id);
+  if (error) return res.status(400).json({ error: error.message });
+
+  const today = new Date().toISOString().split('T')[0];
+  const summary = { all: 0, unpaid: 0, paid: 0, overdue: 0, cancelled: 0,
+                    total_unpaid: 0, total_paid: 0, total_overdue: 0, total_outstanding: 0 };
+  (data || []).forEach(inv => {
+    summary.all++;
+    summary[inv.status] = (summary[inv.status] || 0) + 1;
+    if (inv.status === 'unpaid') { summary.total_unpaid += inv.total; summary.total_outstanding += inv.total; }
+    if (inv.status === 'paid')   summary.total_paid += inv.total;
+    if (inv.status === 'overdue') { summary.total_overdue += inv.total; summary.total_outstanding += inv.total; }
+  });
+  res.json({ summary });
+});
+
+app.get('/invoices/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('*, invoice_items(*)')
+    .eq('store_id', store_id)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ invoices: data });
+});
+
+app.post('/invoices', async (req, res) => {
+  const { store_id, customer_name, customer_email, customer_phone,
+          issue_date, due_date, vat_rate, subtotal, vat_amount, total, notes, items } = req.body;
+
+  const date = new Date();
+  const datePart = date.toISOString().slice(0, 10).replace(/-/g, '');
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  const invoice_number = `INV-${datePart}-${rand}`;
+
+  const { data: inv, error: invError } = await supabase
+    .from('invoices')
+    .insert([{ store_id, invoice_number, customer_name, customer_email, customer_phone,
+               issue_date, due_date, vat_rate, subtotal, vat_amount, total, notes, status: 'unpaid' }])
+    .select();
+  if (invError) return res.status(400).json({ error: invError.message });
+
+  const invoice = inv[0];
+
+  if (items && items.length > 0) {
+    const rows = items.map(item => ({
+      invoice_id:  invoice.id,
+      description: item.description,
+      quantity:    item.quantity,
+      unit_price:  item.unit_price,
+      total:       item.total,
+    }));
+    const { error: itemsError } = await supabase.from('invoice_items').insert(rows);
+    if (itemsError) return res.status(400).json({ error: itemsError.message });
+  }
+
+  const { data: full } = await supabase
+    .from('invoices')
+    .select('*, invoice_items(*)')
+    .eq('id', invoice.id)
+    .single();
+
+  res.status(201).json({ invoice: full });
+});
+
+app.put('/invoices/:id', async (req, res) => {
+  const { id } = req.params;
+  const body = req.body;
+  const updates = { updated_at: new Date().toISOString() };
+  if (body.status !== undefined)         updates.status         = body.status;
+  if (body.customer_name !== undefined)  updates.customer_name  = body.customer_name;
+  if (body.customer_email !== undefined) updates.customer_email = body.customer_email;
+  if (body.customer_phone !== undefined) updates.customer_phone = body.customer_phone;
+  if (body.due_date !== undefined)       updates.due_date       = body.due_date;
+  if (body.notes !== undefined)          updates.notes          = body.notes;
+  if (body.vat_rate !== undefined)       updates.vat_rate       = body.vat_rate;
+  if (body.vat_amount !== undefined)     updates.vat_amount     = body.vat_amount;
+  if (body.subtotal !== undefined)       updates.subtotal       = body.subtotal;
+  if (body.total !== undefined)          updates.total          = body.total;
+  const { data, error } = await supabase
+    .from('invoices')
+    .update(updates)
+    .eq('id', id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ invoice: data[0] });
+});
+
+app.delete('/invoices/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('invoices').delete().eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Invoice deleted' });
+});
+
+// ── PURCHASE ORDERS ──────────────────────────────────────────────────────────
+
+app.get('/purchase-orders/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('purchase_orders')
+    .select('*, purchase_order_items(*)')
+    .eq('store_id', store_id)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ purchase_orders: data });
+});
+
+app.post('/purchase-orders', async (req, res) => {
+  const { store_id, supplier_id, supplier_name, order_date, expected_date, notes, subtotal, total, items } = req.body;
+
+  const date = new Date();
+  const datePart = date.toISOString().slice(0, 10).replace(/-/g, '');
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  const po_number = `PO-${datePart}-${rand}`;
+
+  const { data: po, error: poError } = await supabase
+    .from('purchase_orders')
+    .insert([{ store_id, po_number, supplier_id: supplier_id || null, supplier_name, order_date, expected_date: expected_date || null, notes: notes || null, subtotal: subtotal || 0, total: total || 0, status: 'draft' }])
+    .select();
+  if (poError) return res.status(400).json({ error: poError.message });
+
+  const order = po[0];
+
+  if (items && items.length > 0) {
+    const rows = items.map(item => ({
+      po_id:        order.id,
+      product_id:   item.product_id || null,
+      product_name: item.product_name,
+      quantity:     item.quantity,
+      unit_cost:    item.unit_cost,
+      total:        item.total,
+      received_qty: 0,
+    }));
+    const { error: itemsError } = await supabase.from('purchase_order_items').insert(rows);
+    if (itemsError) return res.status(400).json({ error: itemsError.message });
+  }
+
+  const { data: full } = await supabase
+    .from('purchase_orders')
+    .select('*, purchase_order_items(*)')
+    .eq('id', order.id)
+    .single();
+
+  res.status(201).json({ purchase_order: full });
+});
+
+app.put('/purchase-orders/:id', async (req, res) => {
+  const { id } = req.params;
+  const body = req.body;
+  const updates = { updated_at: new Date().toISOString() };
+  if (body.status !== undefined)        updates.status        = body.status;
+  if (body.supplier_name !== undefined) updates.supplier_name = body.supplier_name;
+  if (body.supplier_id !== undefined)   updates.supplier_id   = body.supplier_id;
+  if (body.order_date !== undefined)    updates.order_date    = body.order_date;
+  if (body.expected_date !== undefined) updates.expected_date = body.expected_date;
+  if (body.notes !== undefined)         updates.notes         = body.notes;
+  if (body.subtotal !== undefined)      updates.subtotal      = body.subtotal;
+  if (body.total !== undefined)         updates.total         = body.total;
+  const { data, error } = await supabase
+    .from('purchase_orders')
+    .update(updates)
+    .eq('id', id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ purchase_order: data[0] });
+});
+
+app.delete('/purchase-orders/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('purchase_orders').delete().eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Purchase order deleted' });
+});
+
+app.put('/purchase-orders/:id/receive', async (req, res) => {
+  const { id } = req.params;
+  const { received_items } = req.body;
+  // received_items: [{ item_id, received_qty, product_id }]
+
+  for (const ri of received_items) {
+    // Update received_qty on the PO item
+    await supabase
+      .from('purchase_order_items')
+      .update({ received_qty: ri.received_qty })
+      .eq('id', ri.item_id);
+
+    // Add to product stock if product_id is set and qty > 0
+    if (ri.product_id && ri.received_qty > 0) {
+      const { data: product } = await supabase
+        .from('products')
+        .select('quantity')
+        .eq('id', ri.product_id)
+        .single();
+      if (product) {
+        await supabase
+          .from('products')
+          .update({ quantity: product.quantity + ri.received_qty })
+          .eq('id', ri.product_id);
+      }
+    }
+  }
+
+  // Mark PO as received
+  const { data, error } = await supabase
+    .from('purchase_orders')
+    .update({ status: 'received', updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('*, purchase_order_items(*)');
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ purchase_order: data[0] });
 });
 
 app.listen(PORT, () => {
