@@ -1802,7 +1802,6 @@ app.get('/suppliers/:store_id/scorecard', async (req, res) => {
     const pos = posRes.data || [];
     const deliveries = deliveriesRes.data || [];
     const totalOrders = pos.length;
-    const receivedOrders = pos.filter(p => p.status === 'received').length;
     const totalSpend = pos.filter(p => p.status === 'received').reduce((sum, p) => sum + (p.total || 0), 0);
     const onTimeCount = deliveries.filter(d => d.status === 'on_time').length;
     const lateCount = deliveries.filter(d => d.status === 'late').length;
@@ -1817,7 +1816,7 @@ app.get('/suppliers/:store_id/scorecard', async (req, res) => {
       : null;
 
     return { id: s.id, name: s.name, phone: s.phone, lead_time_days: s.lead_time_days,
-             totalOrders, receivedOrders, totalSpend, onTimeCount, lateCount, onTimeRate, avgLeadTime };
+             totalOrders, totalSpend, onTimeCount, lateCount, onTimeRate, avgLeadTime };
   }));
 
   res.json({ scorecard });
