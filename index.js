@@ -1651,7 +1651,25 @@ app.put('/purchase-orders/:id/receive', async (req, res) => {
     .eq('id', id)
     .select('*, purchase_order_items(*)');
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ purchase_order: data[0] });
+
+  const po = data[0];
+
+  // Auto-log supplier delivery record
+  if (po?.supplier_id) {
+    const actualDate = new Date().toISOString().split('T')[0];
+    const expectedDate = po.expected_date;
+    const status = !expectedDate ? 'on_time' : actualDate <= expectedDate ? 'on_time' : 'late';
+    await supabase.from('supplier_deliveries').insert([{
+      store_id: po.store_id,
+      supplier_id: po.supplier_id,
+      po_id: po.id,
+      expected_date: expectedDate || null,
+      actual_date: actualDate,
+      status,
+    }]);
+  }
+
+  res.json({ purchase_order: po });
 });
 
 // ── CRM / CUSTOMERS ──────────────────────────────────────────────────────────
@@ -1765,6 +1783,112 @@ app.patch('/customers/:id/followup', async (req, res) => {
     .select();
   if (error) return res.status(400).json({ error: error.message });
   res.json({ customer: data[0] });
+});
+
+// ── SUPPLIER SCORECARD & DELIVERIES ─────────────────────────────────────────
+
+app.get('/suppliers/:store_id/scorecard', async (req, res) => {
+  const { store_id } = req.params;
+  const { data: suppliers, error } = await supabase
+    .from('suppliers').select('*').eq('store_id', store_id);
+  if (error) return res.status(400).json({ error: error.message });
+
+  const scorecard = await Promise.all((suppliers || []).map(async (s) => {
+    const [posRes, deliveriesRes] = await Promise.all([
+      supabase.from('purchase_orders').select('id, total, status').eq('supplier_id', s.id),
+      supabase.from('supplier_deliveries').select('*').eq('supplier_id', s.id),
+    ]);
+
+    const pos = posRes.data || [];
+    const deliveries = deliveriesRes.data || [];
+    const totalOrders = pos.length;
+    const receivedOrders = pos.filter(p => p.status === 'received').length;
+    const totalSpend = pos.filter(p => p.status === 'received').reduce((sum, p) => sum + (p.total || 0), 0);
+    const onTimeCount = deliveries.filter(d => d.status === 'on_time').length;
+    const lateCount = deliveries.filter(d => d.status === 'late').length;
+    const onTimeRate = deliveries.length > 0 ? Math.round((onTimeCount / deliveries.length) * 100) : null;
+
+    const avgLeadTime = deliveries.filter(d => d.actual_date && d.expected_date).length > 0
+      ? Math.round(deliveries.filter(d => d.actual_date && d.expected_date)
+          .reduce((sum, d) => {
+            const diff = (new Date(d.actual_date) - new Date(d.expected_date)) / (1000 * 60 * 60 * 24);
+            return sum + diff;
+          }, 0) / deliveries.filter(d => d.actual_date && d.expected_date).length)
+      : null;
+
+    return { id: s.id, name: s.name, phone: s.phone, lead_time_days: s.lead_time_days,
+             totalOrders, receivedOrders, totalSpend, onTimeCount, lateCount, onTimeRate, avgLeadTime };
+  }));
+
+  res.json({ scorecard });
+});
+
+app.get('/supplier-deliveries/:supplier_id', async (req, res) => {
+  const { supplier_id } = req.params;
+  const { data, error } = await supabase
+    .from('supplier_deliveries')
+    .select('*, purchase_orders(po_number)')
+    .eq('supplier_id', supplier_id)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ deliveries: data });
+});
+
+app.post('/supplier-deliveries', async (req, res) => {
+  const { store_id, supplier_id, po_id, expected_date, actual_date, notes } = req.body;
+  let status = 'pending';
+  if (actual_date) {
+    status = !expected_date || actual_date <= expected_date ? 'on_time' : 'late';
+  }
+  const { data, error } = await supabase
+    .from('supplier_deliveries')
+    .insert([{ store_id, supplier_id, po_id: po_id || null, expected_date: expected_date || null, actual_date: actual_date || null, status, notes: notes || null }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ delivery: data[0] });
+});
+
+app.patch('/supplier-deliveries/:id', async (req, res) => {
+  const { id } = req.params;
+  const body = req.body;
+  const updates = {};
+  if (body.actual_date !== undefined) updates.actual_date = body.actual_date;
+  if (body.status !== undefined)      updates.status      = body.status;
+  if (body.notes !== undefined)       updates.notes       = body.notes;
+  // Recalculate status if actual_date provided without explicit status
+  if (body.actual_date && !body.status) {
+    const { data: existing } = await supabase.from('supplier_deliveries').select('expected_date').eq('id', id).single();
+    if (existing) {
+      updates.status = !existing.expected_date || body.actual_date <= existing.expected_date ? 'on_time' : 'late';
+    }
+  }
+  const { data, error } = await supabase
+    .from('supplier_deliveries').update(updates).eq('id', id).select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ delivery: data[0] });
+});
+
+// ── SUPPLIER PRICE HISTORY ────────────────────────────────────────────────────
+
+app.get('/supplier-price-history/:supplier_id', async (req, res) => {
+  const { supplier_id } = req.params;
+  const { data, error } = await supabase
+    .from('supplier_price_history')
+    .select('*')
+    .eq('supplier_id', supplier_id)
+    .order('recorded_date', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ history: data });
+});
+
+app.post('/supplier-price-history', async (req, res) => {
+  const { store_id, supplier_id, product_id, product_name, unit_cost, recorded_date, notes } = req.body;
+  const { data, error } = await supabase
+    .from('supplier_price_history')
+    .insert([{ store_id, supplier_id, product_id: product_id || null, product_name, unit_cost, recorded_date, notes: notes || null }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ entry: data[0] });
 });
 
 app.listen(PORT, () => {
