@@ -692,36 +692,6 @@ app.get('/cashflow/:store_id', async (req, res) => {
   res.json({ monthly, totalRevenue, totalExpenses, netCashFlow, recentExpenses: expenses.slice(0, 5) });
 });
 
-app.post('/customers', async (req, res) => {
-  const { store_id, name, phone, email } = req.body;
-  const { data, error } = await supabase
-    .from('customers')
-    .insert([{ store_id, name, phone, email }])
-    .select();
-  if (error) return res.status(400).json({ error: error.message });
-  res.status(201).json({ customer: data[0] });
-});
-
-app.get('/customers/:store_id', async (req, res) => {
-  const { store_id } = req.params;
-  const { data, error } = await supabase
-    .from('customers')
-    .select('*')
-    .eq('store_id', store_id)
-    .order('name', { ascending: true });
-  if (error) return res.status(400).json({ error: error.message });
-  res.json({ customers: data });
-});
-
-app.delete('/customers/:id', async (req, res) => {
-  const { id } = req.params;
-  const { error } = await supabase
-    .from('customers')
-    .delete()
-    .eq('id', id);
-  if (error) return res.status(400).json({ error: error.message });
-  res.json({ message: 'Customer deleted successfully' });
-});
 
 app.get('/credit/:store_id', async (req, res) => {
   const { store_id } = req.params;
@@ -1259,10 +1229,10 @@ app.get('/branch-comparison/:store_id', async (req, res) => {
 // Update staff profile and salary
 app.patch('/staff/:user_id/profile', async (req, res) => {
   const { user_id } = req.params;
-  const { name, phone, id_number, job_title, salary, pay_frequency, contract_type, date_joined } = req.body;
+  const { name, phone, id_number, job_title, salary, pay_frequency, contract_type, date_joined, crm_permissions } = req.body;
   const { data, error } = await supabase
     .from('users')
-    .update({ name, phone, id_number, job_title, salary, pay_frequency, contract_type, date_joined })
+    .update({ name, phone, id_number, job_title, salary, pay_frequency, contract_type, date_joined, crm_permissions })
     .eq('id', user_id)
     .select();
   if (error) return res.status(400).json({ error: error.message });
@@ -1682,6 +1652,119 @@ app.put('/purchase-orders/:id/receive', async (req, res) => {
     .select('*, purchase_order_items(*)');
   if (error) return res.status(400).json({ error: error.message });
   res.json({ purchase_order: data[0] });
+});
+
+// ── CRM / CUSTOMERS ──────────────────────────────────────────────────────────
+
+app.get('/customers/:store_id/followups', async (req, res) => {
+  const { store_id } = req.params;
+  const today = new Date().toISOString().split('T')[0];
+  const { data, error } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('store_id', store_id)
+    .not('followup_date', 'is', null)
+    .lte('followup_date', today)
+    .order('followup_date', { ascending: true });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ customers: data });
+});
+
+app.get('/customers/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data: customers, error } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('store_id', store_id)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+
+  // Attach invoice totals for each customer
+  const enriched = await Promise.all((customers || []).map(async (c) => {
+    const { data: invs } = await supabase
+      .from('invoices')
+      .select('total, status')
+      .eq('customer_id', c.id);
+    const total_spend = (invs || []).reduce((s, i) => s + (i.total || 0), 0);
+    const outstanding_balance = (invs || [])
+      .filter(i => i.status !== 'paid' && i.status !== 'cancelled')
+      .reduce((s, i) => s + (i.total || 0), 0);
+    return { ...c, total_spend, outstanding_balance };
+  }));
+
+  res.json({ customers: enriched });
+});
+
+app.post('/customers', async (req, res) => {
+  const { store_id, name, phone, email, location, notes, followup_date, followup_note } = req.body;
+  const { data, error } = await supabase
+    .from('customers')
+    .insert([{ store_id, name, phone, email, location, notes, followup_date: followup_date || null, followup_note: followup_note || null }])
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json({ customer: data[0] });
+});
+
+app.put('/customers/:id', async (req, res) => {
+  const { id } = req.params;
+  const body = req.body;
+  const updates = { updated_at: new Date().toISOString() };
+  if (body.name !== undefined)          updates.name          = body.name;
+  if (body.phone !== undefined)         updates.phone         = body.phone;
+  if (body.email !== undefined)         updates.email         = body.email;
+  if (body.location !== undefined)      updates.location      = body.location;
+  if (body.notes !== undefined)         updates.notes         = body.notes;
+  if (body.followup_date !== undefined) updates.followup_date = body.followup_date;
+  if (body.followup_note !== undefined) updates.followup_note = body.followup_note;
+  const { data, error } = await supabase
+    .from('customers')
+    .update(updates)
+    .eq('id', id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ customer: data[0] });
+});
+
+app.delete('/customers/:id', async (req, res) => {
+  const { id } = req.params;
+  const { error } = await supabase.from('customers').delete().eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: 'Customer deleted' });
+});
+
+app.get('/customers/:id/profile', async (req, res) => {
+  const { id } = req.params;
+  const { data: customer, error } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (error) return res.status(400).json({ error: error.message });
+
+  const { data: invoices } = await supabase
+    .from('invoices')
+    .select('id, invoice_number, issue_date, total, status')
+    .eq('customer_id', id)
+    .order('issue_date', { ascending: false });
+
+  const total_spend = (invoices || []).reduce((s, i) => s + (i.total || 0), 0);
+  const outstanding_balance = (invoices || [])
+    .filter(i => i.status !== 'paid' && i.status !== 'cancelled')
+    .reduce((s, i) => s + (i.total || 0), 0);
+
+  res.json({ customer: { ...customer, total_spend, outstanding_balance }, invoices: invoices || [] });
+});
+
+app.patch('/customers/:id/followup', async (req, res) => {
+  const { id } = req.params;
+  const { followup_date, followup_note } = req.body;
+  const { data, error } = await supabase
+    .from('customers')
+    .update({ followup_date: followup_date || null, followup_note: followup_note || null, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ customer: data[0] });
 });
 
 app.listen(PORT, () => {
