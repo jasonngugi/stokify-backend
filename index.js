@@ -1890,6 +1890,212 @@ app.post('/supplier-price-history', async (req, res) => {
   res.status(201).json({ entry: data[0] });
 });
 
+// ── eTIMS ─────────────────────────────────────────────────────────────────────
+
+async function submitToETIMS(config, payload) {
+  if (!config || !config.enabled) {
+    return { success: false, error: 'eTIMS not configured or disabled' };
+  }
+
+  const baseUrl = config.environment === 'production'
+    ? 'https://etims.kra.go.ke/api/v1'
+    : 'https://etims-sbx.kra.go.ke/api/v1';
+
+  try {
+    const response = await fetch(`${baseUrl}/invoice/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.api_key}`,
+        'X-KRA-PIN': config.kra_pin,
+        'X-Branch-Code': config.branch_code,
+        'X-Device-Serial': config.device_serial || '',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return { success: false, error: `KRA returned ${response.status}: ${errText}` };
+    }
+
+    const data = await response.json();
+    return { success: true, cuin: data.cuin, qr_code_data: data.qrCode || data.qr_code };
+  } catch (err) {
+    if (config.environment === 'sandbox') {
+      const mockCuin = `KRA-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      return {
+        success: true,
+        cuin: mockCuin,
+        qr_code_data: `https://etims-sbx.kra.go.ke/verify?cuin=${mockCuin}`,
+        mocked: true,
+      };
+    }
+    return { success: false, error: err.message };
+  }
+}
+
+app.get('/etims/config/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('etims_config')
+    .select('*')
+    .eq('store_id', store_id)
+    .single();
+  if (error && error.code !== 'PGRST116') return res.status(400).json({ error: error.message });
+  res.json({ config: data || null });
+});
+
+app.post('/etims/config', async (req, res) => {
+  const { store_id, kra_pin, branch_code, device_serial, api_key, environment, enabled } = req.body;
+  const { data, error } = await supabase
+    .from('etims_config')
+    .upsert(
+      { store_id, kra_pin, branch_code, device_serial, api_key, environment, enabled, updated_at: new Date().toISOString() },
+      { onConflict: 'store_id' }
+    )
+    .select();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ config: data[0] });
+});
+
+app.post('/etims/submit/sale/:sale_id', async (req, res) => {
+  const { sale_id } = req.params;
+  const { store_id } = req.body;
+
+  const { data: config } = await supabase
+    .from('etims_config')
+    .select('*')
+    .eq('store_id', store_id)
+    .single();
+
+  const { data: sale, error: saleError } = await supabase
+    .from('sales')
+    .select('id, total_amount, sold_at, payment_method, sale_items(quantity, unit_price, products(name, buying_price))')
+    .eq('id', sale_id)
+    .single();
+  if (saleError) return res.status(400).json({ error: saleError.message });
+
+  const payload = {
+    invoiceType: 'sale',
+    invoiceDate: sale.sold_at,
+    totalAmount: sale.total_amount,
+    paymentMethod: sale.payment_method,
+    lineItems: (sale.sale_items || []).map(item => ({
+      description: item.products?.name || 'Item',
+      quantity: item.quantity,
+      unitPrice: item.unit_price,
+      total: item.quantity * item.unit_price,
+    })),
+  };
+
+  const result = await submitToETIMS(config, payload);
+
+  const { data: submission, error: subError } = await supabase
+    .from('etims_submissions')
+    .upsert(
+      {
+        store_id,
+        reference_type: 'sale',
+        reference_id: sale_id,
+        cuin: result.cuin || null,
+        qr_code_data: result.qr_code_data || null,
+        status: result.success ? 'submitted' : 'failed',
+        submitted_at: new Date().toISOString(),
+        error_message: result.error || null,
+        raw_response: result,
+      },
+      { onConflict: 'reference_type,reference_id' }
+    )
+    .select();
+  if (subError) return res.status(400).json({ error: subError.message });
+
+  res.json({ submission: submission[0], mocked: result.mocked || false });
+});
+
+app.post('/etims/submit/invoice/:invoice_id', async (req, res) => {
+  const { invoice_id } = req.params;
+  const { store_id } = req.body;
+
+  const { data: config } = await supabase
+    .from('etims_config')
+    .select('*')
+    .eq('store_id', store_id)
+    .single();
+
+  const { data: invoice, error: invError } = await supabase
+    .from('invoices')
+    .select('*, invoice_items(*)')
+    .eq('id', invoice_id)
+    .single();
+  if (invError) return res.status(400).json({ error: invError.message });
+
+  const payload = {
+    invoiceType: 'invoice',
+    invoiceNumber: invoice.invoice_number,
+    invoiceDate: invoice.issue_date,
+    dueDate: invoice.due_date,
+    customerName: invoice.customer_name,
+    customerEmail: invoice.customer_email,
+    totalAmount: invoice.total,
+    vatAmount: invoice.vat_amount,
+    vatRate: invoice.vat_rate,
+    lineItems: (invoice.invoice_items || []).map(item => ({
+      description: item.description,
+      quantity: item.quantity,
+      unitPrice: item.unit_price,
+      total: item.total,
+    })),
+  };
+
+  const result = await submitToETIMS(config, payload);
+
+  const { data: submission, error: subError } = await supabase
+    .from('etims_submissions')
+    .upsert(
+      {
+        store_id,
+        reference_type: 'invoice',
+        reference_id: invoice_id,
+        cuin: result.cuin || null,
+        qr_code_data: result.qr_code_data || null,
+        status: result.success ? 'submitted' : 'failed',
+        submitted_at: new Date().toISOString(),
+        error_message: result.error || null,
+        raw_response: result,
+      },
+      { onConflict: 'reference_type,reference_id' }
+    )
+    .select();
+  if (subError) return res.status(400).json({ error: subError.message });
+
+  res.json({ submission: submission[0], mocked: result.mocked || false });
+});
+
+app.get('/etims/status/:store_id', async (req, res) => {
+  const { store_id } = req.params;
+  const { data, error } = await supabase
+    .from('etims_submissions')
+    .select('*')
+    .eq('store_id', store_id)
+    .order('submitted_at', { ascending: false })
+    .limit(50);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ submissions: data });
+});
+
+app.get('/etims/submission/:reference_type/:reference_id', async (req, res) => {
+  const { reference_type, reference_id } = req.params;
+  const { data, error } = await supabase
+    .from('etims_submissions')
+    .select('*')
+    .eq('reference_type', reference_type)
+    .eq('reference_id', reference_id)
+    .single();
+  if (error && error.code !== 'PGRST116') return res.status(400).json({ error: error.message });
+  res.json({ submission: data || null });
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
